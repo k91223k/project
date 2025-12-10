@@ -1,7 +1,7 @@
 /* -----------------------------
     後端 API 位置
 ------------------------------ */
-const API_BASE = "http://localhost:3000";
+const API_BASE = "http://localhost:3000"; 
 
 
 /* -----------------------------
@@ -147,12 +147,15 @@ if (postForm) {
                 return;
             }
             
+            // 刊登時新增一個時間戳，用於排序
             const newProduct = { 
                 title, 
                 price, 
                 desc, 
                 img: imgUrl, 
-                seller: getUser()
+                seller: getUser(),
+                // 【新增】記錄刊登時間，用於「最新上架」排序
+                timestamp: Date.now() 
             };
 
             try {
@@ -180,15 +183,12 @@ if (postForm) {
 
 
 /* -----------------------------
-    5. 商品列表 index.html (GET 請求與搜尋功能)
+    5. 商品列表 index.html (GET 請求與排序/篩選功能)
 ------------------------------ */
 
-async function loadProducts(keyword = "") {
+// 僅用於獲取所有商品數據
+async function loadProducts() { 
     let url = `${API_BASE}/products`;
-    // 支援 json-server 的 title_like 模糊搜索
-    if (keyword) {
-        url += `?title_like=${encodeURIComponent(keyword)}`; 
-    }
     try {
         const res = await fetch(url);
         if (!res.ok) { throw new Error(`HTTP 錯誤: ${res.status}`); }
@@ -199,26 +199,81 @@ async function loadProducts(keyword = "") {
     }
 }
 
-async function renderProducts(keyword = "") {
+// 獲取目前的關鍵字和排序方式，並調用 renderProducts
+function getCurrentFiltersAndRender() {
+    const keyword = document.getElementById("searchInput")?.value.trim() || "";
+    const sortBy = document.getElementById("sortSelect")?.value || "default";
+    renderProducts(keyword, sortBy);
+}
+
+
+// 處理搜尋按鈕點擊事件
+function handleSearch() {
+    getCurrentFiltersAndRender();
+}
+
+// 【新增】處理排序下拉選單變更事件
+function handleSort() {
+    getCurrentFiltersAndRender();
+}
+
+
+// 執行前端篩選、排序並渲染列表
+async function renderProducts(keyword = "", sortBy = "default") {
     const list = document.getElementById("product-list");
     if (!list) return;
 
-    const products = await loadProducts(keyword); 
+    // 1. 獲取所有商品
+    const allProducts = await loadProducts(); 
     list.innerHTML = "";
     
-    if (products.length === 0 && keyword) {
+    // 2. 篩選邏輯 (根據關鍵字)
+    const trimmedKeyword = keyword.toLowerCase();
+    
+    const filteredProducts = trimmedKeyword
+        ? allProducts.filter(p => 
+            String(p.title).toLowerCase().includes(trimmedKeyword)
+          )
+        : allProducts; 
+
+    
+    // 3. 【新增】排序邏輯 (根據 sortBy 參數)
+    filteredProducts.sort((a, b) => {
+        const priceA = parseFloat(a.price);
+        const priceB = parseFloat(b.price);
+        
+        switch (sortBy) {
+            case 'price-asc': // 價格低到高
+                return priceA - priceB;
+            case 'price-desc': // 價格高到低
+                return priceB - priceA;
+            case 'default': // 最新上架 (timestamp 大的在前)
+            default:
+                // 檢查是否有 timestamp 欄位，沒有則用 ID 倒序
+                const timeA = a.timestamp || 0; 
+                const timeB = b.timestamp || 0; 
+                if (timeA && timeB) {
+                     return timeB - timeA;
+                }
+                // 兼容舊數據（如果沒有 timestamp，則用 ID 倒序）
+                return String(b.id).localeCompare(String(a.id)); 
+        }
+    });
+
+    
+    // 4. 渲染結果
+    if (filteredProducts.length === 0 && trimmedKeyword) {
         list.innerHTML = `<p>找不到符合關鍵字 "${keyword}" 的商品。</p>`;
         return;
-    } else if (products.length === 0) {
+    } else if (filteredProducts.length === 0) {
         list.innerHTML = `<p>目前沒有任何商品上架。</p>`;
         return;
     }
 
-    products.forEach(p => {
+    filteredProducts.forEach(p => {
         const item = document.createElement("div");
         item.className = "product";
         
-        // 【核心修正】: 將 ID 視為字串 (適用於 json-server 亂數 ID)
         const productId = String(p.id).trim(); 
 
         if (productId) { 
@@ -234,16 +289,13 @@ async function renderProducts(keyword = "") {
         }
     });
 }
+// 頁面載入時執行
 renderProducts(); 
-
-function handleSearch() {
-    const searchInput = document.getElementById("searchInput");
-    renderProducts(searchInput.value.trim()); 
-}
 
 
 /* -----------------------------
-    6. 商品詳情 product.html (GET 請求與刪除)
+/* -----------------------------
+    6. 商品詳情 product.html (GET 請求與刪除/聯絡)
 ------------------------------ */
 
 // 開啟商品詳細頁，傳遞字串 ID
@@ -256,7 +308,6 @@ async function loadDetailPage() {
     if (!box) return;
 
     const params = new URLSearchParams(location.search);
-    // 獲取字串 ID
     const id = params.get("id"); 
 
     if (!id) {
@@ -265,7 +316,6 @@ async function loadDetailPage() {
     }
 
     try {
-        // API 請求使用字串 ID
         const res = await fetch(`${API_BASE}/products/${id}`); 
 
         if (!res.ok) {
@@ -274,34 +324,55 @@ async function loadDetailPage() {
         }
         
         const p = await res.json();
-        const isOwner = p.seller === getUser();
+        const currentUser = getUser();
+        const isOwner = p.seller === currentUser;
 
+        // 賣家 Email，用於聯絡
+        const sellerEmail = p.seller || 'N/A';
+        const subject = `詢問商品: ${p.title} (ID: ${p.id})`;
+
+        // 聯絡按鈕 HTML，使用 mailto 協定
+        const contactButton = `
+            <a href="mailto:${sellerEmail}?subject=${encodeURIComponent(subject)}" class="contact-btn">
+                聯絡賣家：${sellerEmail}
+            </a>
+        `;
+        
+        // 刪除按鈕 HTML (只對刊登者顯示)
+        const deleteButton = isOwner ? 
+            `<button class="delete-btn" onclick="deleteProduct('${p.id}')">
+                刪除此商品
+            </button>` 
+            : '';
+
+        // 渲染詳細資訊 (與 CSS 配合實現雙欄佈局)
         box.innerHTML = `
             <img src="${p.img}" class="detail-img"/>
-            <h2>${p.title}</h2>
-            <p><b>價格：</b>NT$ ${p.price}</p>
-            <p><b>描述：</b>${p.desc}</p>
-            <p><small>刊登者: ${p.seller || 'N/A'}</small></p>
+            
+            <div class="product-info">
+                <h2>${p.title}</h2>
+                <p><b>價格：</b>NT$ ${p.price}</p>
+                <p><b>描述：</b>${p.desc}</p>
+                <p><small>刊登者: ${sellerEmail}</small></p>
 
-            ${isOwner ? 
-                `<button class="delete-btn" onclick="deleteProduct('${p.id}')">
-                    刪除此商品
-                </button>` 
-                : ''}
+                ${!isOwner ? contactButton : ''}
+
+                ${deleteButton}
+            </div>
         `;
+        
     } catch (err) {
         box.innerHTML = "<h2>讀取商品詳細失敗</h2>";
         console.error(err);
     }
 }
+
 // 確保只在 product.html 頁面運行
 if (document.getElementById("detail")) {
     loadDetailPage();
 }
-
-
 /* -----------------------------
-    刪除商品 (DELETE 請求)
+    7. 刪除商品 (DELETE 請求)
 ------------------------------ */
 async function deleteProduct(id) {
     if (!getUser()) {
